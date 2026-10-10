@@ -1,0 +1,28 @@
+#!/bin/sh
+# Validate a keel config without executing it.
+#   keel-check [--strict] [--format sexp] [--config DIR] [--emacs PATH]
+# Exit 0 clean, 1 problems, 2 harness error.
+set -eu
+
+here=$(cd "$(dirname "$0")/.." && pwd)
+emacs=${EMACS:-emacs}
+config=""
+args=""
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --config) config=$2; shift ;;
+    --emacs) emacs=$2; shift ;;
+    *) args="$args $1" ;;
+  esac
+  shift
+done
+
+if [ -n "$config" ]; then
+  set -- --eval "(setq keel-config-directory \"$config\")"
+else
+  set --
+fi
+
+# shellcheck disable=SC2086
+exec "$emacs" -Q --batch -L "$here/lisp" "$@" -l keel -f keel-check-batch $args
