@@ -52,6 +52,11 @@ nothing about fetching; keel-package replaces it.")
   "Function called with (UNIT THUNK) to run a unit body.
 keel-effects replaces it to capture effects around THUNK.")
 
+(defvar keel-exec-unit-filter #'ignore
+  "Function called with a unit before it runs.
+nil runs the unit; a symbol records it ok with that reason, unrun.  Reload
+uses it to leave unchanged units alone.")
+
 (defvar keel-exec-event-functions nil
   "Abnormal hook run with one plist per execution event.
 Events carry :event (`start' `package' `unit' `finish') and a :result when
@@ -120,14 +125,21 @@ Loads `:requires' features first.  A failed dependency blocks the unit."
                                              (seq-filter
                                               (lambda (f) (keel-find-report results f))
                                               (plist-get unit :requires))))))
-    (if blockers
-        (keel-exec--blocked-result report blockers)
+    (cond
+     (blockers (keel-exec--blocked-result report blockers))
+     ((funcall keel-exec-unit-filter unit)
+      (keel-result-make :name (keel-report-name report)
+                        :kind (keel-report-kind report)
+                        :status 'ok
+                        :reason (funcall keel-exec-unit-filter unit)
+                        :source (keel-report-source report)))
+     (t
       (keel-exec--run-step
        report
        (lambda ()
          (dolist (feature (plist-get unit :requires))
            (require feature))
-         (funcall keel-exec-unit-runner unit (plist-get unit :thunk)))))))
+         (funcall keel-exec-unit-runner unit (plist-get unit :thunk))))))))
 
 (defun keel-exec-package (entry report results)
   "Install package ENTRY under planner REPORT given RESULTS so far."
