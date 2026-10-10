@@ -304,8 +304,19 @@ fields this code does not know."
       (rename-file temp file t))
     payload))
 
+(define-error 'keel-package-lock-unreadable "keel.lock exists but cannot be parsed")
+
+(defun keel-package--lock-writable-p ()
+  "Signal `keel-package-lock-unreadable' when a lock exists but will not parse.
+A rewrite from an empty parse would silently drop every other entry."
+  (let ((file (keel-package--lock-path)))
+    (when (and (file-exists-p file) (null (keel-package-lock-read)))
+      (signal 'keel-package-lock-unreadable (list file)))
+    t))
+
 (defun keel-package-lock-put (entry)
   "Insert or replace the lock entry for ENTRY's :name."
+  (keel-package--lock-writable-p)
   (let ((others (seq-remove
                  (lambda (e) (keel-package--lock-name= e (plist-get entry :name)))
                  (keel-package-lock-entries))))
@@ -314,6 +325,7 @@ fields this code does not know."
 
 (defun keel-package-lock-remove (name)
   "Remove the lock entry for package NAME when present."
+  (keel-package--lock-writable-p)
   (let ((entries (keel-package-lock-entries)))
     (when (seq-find (lambda (e) (keel-package--lock-name= e name)) entries)
       (keel-package--lock-write
@@ -447,11 +459,16 @@ Local packages are never locked."
             (list (keel-package-build-url entry)
                   (keel-package--clone-dir entry)))))
 
+(defun keel-package--git-environment ()
+  "`process-environment' for git: never prompt for credentials."
+  (cons "GIT_TERMINAL_PROMPT=0" process-environment))
+
 (defun keel-package--clone-sync (entry)
   "Clone ENTRY synchronously into its staging directory."
   (let ((buffer (generate-new-buffer
                  (format " *keel-clone-%s*" (keel-package--str entry))))
         (command (keel-package--clone-command entry))
+        (process-environment (keel-package--git-environment))
         status output)
     (keel-package--delete-path (keel-package--clone-dir entry))
     (unwind-protect
@@ -465,11 +482,14 @@ Local packages are never locked."
     :ok))
 
 (defun keel-package--start-clone (entry on-done)
-  "Start an async clone of ENTRY; call ON-DONE with :ok or (:error REASON)."
+  "Start an async clone of ENTRY; call ON-DONE with :ok or (:error REASON).
+A clone that cannot even start reports through ON-DONE as well."
   (let ((buffer (generate-new-buffer
                  (format " *keel-clone-%s*" (keel-package--str entry))))
+        (process-environment (keel-package--git-environment))
         (handled nil))
-    (make-process
+    (condition-case err
+        (make-process
      :name (format "keel-clone-%s" (keel-package--str entry))
      :buffer buffer
      :command (keel-package--clone-command entry)
@@ -487,7 +507,10 @@ Local packages are never locked."
                     (if (zerop code)
                         :ok
                       (list :error (format "git clone exited %d: %s"
-                                           code (string-trim output)))))))))))
+                                           code (string-trim output)))))))))
+      (error
+       (when (buffer-live-p buffer) (kill-buffer buffer))
+       (funcall on-done (list :error (error-message-string err)))))))
 
 (defun keel-package--pump-clones (entries on-each)
   "Clone ENTRIES in parallel; call ON-EACH with (ENTRY STATUS) as each ends.
@@ -688,14 +711,14 @@ since a stale index can name a version the server no longer has."
         (keel-package--refresh-archives))
       (let ((bytecomp--inhibit-lexical-cookie-warning t))
         (condition-case err
-            (package-install sym)
+            (package-install sym t)
           (error
            (if keel-package--archive-refreshed
                (error "Cannot install %s from archive: %s"
                       sym (error-message-string err))
              (keel-package--refresh-archives)
              (condition-case err2
-                 (package-install sym)
+                 (package-install sym t)
                (error
                 (error "Cannot install %s from archive: %s"
                        sym (error-message-string err2))))))))
@@ -892,9 +915,17 @@ upgrade or rebuild instead of just installing."
     name))
 
 (defun keel-package--on-event (event)
-  "Prefetch clones when EVENT, a `keel-exec' event plist, is `start'."
+  "Prefetch clones when EVENT, a `keel-exec' event plist, is `start'.
+An error here must not abort the run: it is remembered per package and
+reported when the installer reaches it."
   (when (eq (plist-get event :event) 'start)
-    (keel-package-prefetch (plist-get event :plan))))
+    (condition-case err
+        (keel-package-prefetch (plist-get event :plan))
+      (error
+       (message "[keel] prefetch failed: %s" (error-message-string err))
+       (dolist (entry (ignore-errors (keel-package--prefetch-entries (plist-get event :plan))))
+         (push (cons (keel-package--sym entry) (error-message-string err))
+               keel-package--clone-failures))))))
 
 ;;;###autoload
 (defun keel-package-enable ()

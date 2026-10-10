@@ -138,6 +138,54 @@ Some prose.
     (should (equal (keel-config-diff-units old new)
                    '(:unchanged (a) :changed (b) :added (c) :removed nil)))
     (should (equal (plist-get (keel-config-diff-units new old) :removed) '(c)))))
+(ert-deftest keel-config-bad-form-is-recorded-and-skipped ()
+  (keel-config-test-with-home
+   (keel-config-test-write "config.el"
+                           ";; -*- lexical-binding: t; -*-\n(config-unit! a :config nil)\n(config-unit! b :nope 1 :config nil)\n(config-unit! c :config nil)\n")
+   (keel-config-load-declarations)
+   (should (equal (mapcar #'keel-entry-name (keel-declared-units)) '(a c)))
+   (should (equal (length keel-load-errors) 1))
+   (should (equal (plist-get (plist-get (car keel-load-errors) :source) :line) 3))
+   (should (string-match-p "unknown key :nope" (plist-get (car keel-load-errors) :message)))))
+
+(ert-deftest keel-config-failed-load-keeps-previous-declarations ()
+  (keel-config-test-with-home
+   (keel-config-test-write "config.el" ";; -*- lexical-binding: t; -*-\n(config-unit! a :config nil)\n")
+   (keel-config-load-declarations)
+   (delete-file (expand-file-name "config.el" keel-config-directory))
+   (should-error (keel-config-load-declarations) :type 'keel-config-missing)
+   (should (equal (mapcar #'keel-entry-name (keel-declared-units)) '(a)))))
+
+(defvar keel-config-test-order nil)
+
+(ert-deftest keel-config-reload-reruns-dependents-and-retracts-in-reverse ()
+  (keel-config-test-with-home
+   (keel-config-test-write
+    "config.el"
+    ";; -*- lexical-binding: t; -*-
+(config-unit! base :config (setq keel-config-test-var 'base) (push 'base keel-config-test-order))
+(config-unit! dep :after (base) :config (setq keel-config-test-var 'dep) (push 'dep keel-config-test-order))
+(config-unit! other :config (push 'other keel-config-test-order))
+")
+   (keel-boot)
+   (setq keel-config-test-order nil)
+   (keel-config-test-write
+    "config.el"
+    ";; -*- lexical-binding: t; -*-
+(config-unit! base :config (setq keel-config-test-var 'base2) (push 'base keel-config-test-order))
+(config-unit! dep :after (base) :config (setq keel-config-test-var 'dep) (push 'dep keel-config-test-order))
+(config-unit! other :config (push 'other keel-config-test-order))
+")
+   (let ((run (keel-reload)))
+     ;; dep is unchanged but after a changed unit: retracted and re-run.
+     (should (equal (reverse keel-config-test-order) '(base dep)))
+     (should (eq (keel-report-reason (keel-run-result run 'other)) 'unchanged))
+     (should (null (keel-report-reason (keel-run-result run 'dep))))
+     (should (eq keel-config-test-var 'dep)))
+   ;; Removing both retracts dep before base, so the original value returns.
+   (keel-config-test-write "config.el" ";; -*- lexical-binding: t; -*-\n(config-unit! other :config nil)\n")
+   (keel-reload)
+   (should (eq keel-config-test-var 'original))))
 
 (provide 'keel-config-test)
 ;;; keel-config-test.el ends here

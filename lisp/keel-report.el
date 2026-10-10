@@ -121,6 +121,13 @@
             (format "  %s, %.2fs, %d declarations\n\n"
                     (format-time-string "%H:%M:%S" (keel-run-started run))
                     (keel-run-elapsed run) (length results)))
+    (when keel-load-errors
+      (insert (propertize "Load errors\n" 'face 'bold))
+      (dolist (e keel-load-errors)
+        (insert (propertize "  error   " 'face 'error) (plist-get e :message) "  ")
+        (keel-report--insert-source (plist-get e :source))
+        (insert "\n"))
+      (insert "\n"))
     (when problems
       (insert (propertize "Problems\n" 'face 'bold))
       (dolist (r problems)
@@ -165,7 +172,8 @@
 (defun keel-report-show-if-needed ()
   "Show the report when something is not ok, or when asked to always."
   (when (and keel-last-run
-             (or keel-show-report-on-startup (keel-run-problems keel-last-run)))
+             (or keel-show-report-on-startup keel-load-errors
+                 (keel-run-problems keel-last-run)))
     (keel-report)))
 
 (add-hook 'keel-after-run-hook #'keel-report-show-if-needed)

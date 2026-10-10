@@ -156,9 +156,14 @@ STATUS is `ok', `invalid' or `skipped'.  REASON is a symbol; DETAILS a plist."
   "Non-nil when REPORT is ok."
   (and report (eq (keel-report-status report) 'ok)))
 
-(defun keel-find-report (reports name)
-  "The report named NAME in REPORTS, or nil."
-  (seq-find (lambda (r) (eq (keel-report-name r) name)) reports))
+(defun keel-find-report (reports name &optional kind)
+  "The report named NAME in REPORTS, or nil.
+With KIND, only a report of that kind: a package and a unit may share a
+name."
+  (seq-find (lambda (r)
+              (and (eq (keel-report-name r) name)
+                   (or (null kind) (eq (keel-report-kind r) kind))))
+            reports))
 
 ;;;; Graph resolution
 

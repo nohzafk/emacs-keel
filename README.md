@@ -82,29 +82,33 @@ the symbol table, the byte-compiler and the runtime, and uses them:
 - **The byte-compiler is the linter.** Each unit body is byte-compiled and
   its warnings (undefined function, free variable, wrong arity) are reported
   with the unit's provenance. No hand-written lint.
-- **Dynamic effect capture.** While a body runs, `add-hook`, `advice-add`,
-  `define-key`/`keymap-set`, and `customize-set-variable` are advised, and
-  the body's `setq` targets carry variable watchers. Effects from loops,
-  helpers and called functions are captured, with old values, not only the
-  forms visible at top level.
+- **Dynamic effect capture.** While a body runs, `add-hook`, `advice-add`
+  and `define-key` (which `keymap-set`, `global-set-key` and friends call)
+  are advised, and the globals the static pass saw assigned carry variable
+  watchers. Effects from loops, helpers and called functions are captured,
+  with old values, not only the forms visible at top level. What a library
+  does while it loads inside the body is its own and is not captured;
+  neither is a hook or advice that was already installed.
 - **Transactional units.** A body that signals an error has its captured
   effects retracted, so a half-applied unit does not leave half its state
   behind.
 - **Effect-aware reload.** `keel-reload` diffs declarations against the
-  previous load, retracts the captured effects of changed units, and
-  re-applies only those. Unchanged units are skipped; removed units are
-  retracted.
+  previous load, retracts the captured effects of changed and removed units
+  and of every unit `:after` them, newest first, and re-applies only those.
+  Everything else is left alone.
 - **Checked-lazy.** A unit with `:defer FEATURE` is preflighted and linted at
-  startup like every other unit, but its body runs on `with-eval-after-load`.
-  Ordering among deferred units follows the graph. Errors surface at startup;
+  startup like every other unit, but its body runs when the feature loads.
+  A unit `:after` a deferred unit waits for it too, and a deferred unit that
+  fails blocks its dependents like any other. Errors surface at startup;
   startup stays fast.
 - **Interactive tooling.** `keel-explain` shows a unit's place in the plan,
   why it was skipped, what it cost, and jumps to its source. `keel-list-units`
   is a `tabulated-list` of every unit. `keel-rerun-unit` re-applies one unit.
-  Timings come from `benchmark-run` per unit.
+  Every unit is timed.
 - **`keel check` is `emacs --batch`.** The same planning and lint code,
-  without execution. Exit codes make a dotfiles repo CI-able. No binary to
-  distribute.
+  with no unit body executed. Exit codes make a dotfiles repo CI-able. No
+  binary to distribute. Top-level forms that are not declarations are still
+  evaluated, and lint macroexpands each body, so `eval-when-compile` runs.
 
 ## What it does not do
 
@@ -165,9 +169,10 @@ runs units, and shows the report if anything failed.
 scripts/keel-check [--strict] [--format sexp] [--config DIR]
 ```
 
-validates the config without executing it: tangle, plan, preflight,
-static lint, byte-compiler lint. Exit `0` clean, `1` an invalid
-declaration (or a lint warning with `--strict`), `2` harness error. Units
+validates the config without running any unit body: tangle, plan,
+preflight, static lint, byte-compiler lint. Exit `0` clean, `1` a
+declaration that failed to load or is invalid (or a lint warning with
+`--strict`), `2` harness error. Units
 skipped by preflight are reported but do not fail the check: they depend
 on the machine, not the config.
 
@@ -206,7 +211,11 @@ A bare `(package! consult)` installs from GNU ELPA, NonGNU ELPA or MELPA
 with `package-install`. Anything with `:repo`, `:host` or `:local` goes
 through Emacs 31's User Lisp Directory: the clone (or the `:local` path)
 is linked into `user-lisp-directory` and `prepare-user-lisp` byte-compiles
-it and scrapes its autoloads. `package-vc-install-from-checkout` is
+it and scrapes its autoloads. keel treats `<user-lisp-directory>/<name>` as
+its own for every declared package: rebuild and prune delete it. Archive
+packages go to `<user-emacs-directory>/keel/packages/`, which keel sets as
+`package-user-dir` at boot; packages installed by hand into `elpa/` are
+not seen. `package-vc-install-from-checkout` is
 obsolete in 31 and is not used. Clones are fetched in parallel before the
 plan runs; adoption is per package, in plan order.
 

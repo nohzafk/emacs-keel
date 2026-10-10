@@ -32,7 +32,7 @@
     (keel-exec-run (keel-plan-compute pkgs units) pkgs units)))
 
 (defun keel-exec-test-status (run name)
-  (let ((r (keel-run-result run name)))
+  (let ((r (or (keel-run-result run name 'unit) (keel-run-result run name 'package))))
     (list (keel-report-status r) (keel-report-reason r))))
 
 (ert-deftest keel-exec-runs-in-plan-order-and-times ()
@@ -165,6 +165,43 @@
        (keel-exec-deferred-forget 'gone)
        (provide 'keel-exec-test-feat-c)
        (should-not (memq 'gone keel-exec-test-log))))))
+(ert-deftest keel-exec-package-and-unit-may-share-a-name ()
+  (keel-exec-test-with
+   (package! broken)
+   (config-unit! broken :config (push 'unit-ran keel-exec-test-log))
+   (let ((run (keel-exec-test-run)))
+     (should (equal (keel-report-status (keel-run-result run 'broken 'package)) 'failed))
+     (should (equal (keel-report-status (keel-run-result run 'broken 'unit)) 'ok))
+     (should (equal (length (keel-run-problems run)) 1))
+     (should (memq 'unit-ran keel-exec-test-log)))))
+
+(ert-deftest keel-exec-unit-after-a-deferred-unit-waits-for-it ()
+  (keel-exec-test-with
+   (keel-exec-test-with-feature 'keel-exec-test-feat-d
+     (let ((keel-exec-deferred nil)
+           (keel-exec-deferred-result-functions nil))
+       (config-unit! lazy :defer keel-exec-test-feat-d :config (push 'lazy keel-exec-test-log))
+       (config-unit! eager :after (lazy) :config (push 'eager keel-exec-test-log))
+       (let ((run (keel-exec-test-run)))
+         (should (equal (keel-exec-test-status run 'eager) '(ok deferred)))
+         (should-not (memq 'eager keel-exec-test-log))
+         (provide 'keel-exec-test-feat-d)
+         (should (equal (seq-filter #'symbolp keel-exec-test-log) '(eager lazy))))))))
+
+(ert-deftest keel-exec-failed-deferred-dependency-blocks-dependent ()
+  (keel-exec-test-with
+   (keel-exec-test-with-feature 'keel-exec-test-feat-e
+     (let ((keel-exec-deferred nil)
+           (seen nil)
+           (keel-exec-deferred-result-functions nil))
+       (add-hook 'keel-exec-deferred-result-functions
+                 (lambda (r) (push (cons (keel-report-name r) (keel-report-status r)) seen)))
+       (config-unit! bad :defer keel-exec-test-feat-e :config (error "boom"))
+       (config-unit! child :after (bad) :config (push 'child keel-exec-test-log))
+       (keel-exec-test-run)
+       (provide 'keel-exec-test-feat-e)
+       (should-not (memq 'child keel-exec-test-log))
+       (should (equal (reverse seen) '((bad . failed) (child . skipped))))))))
 
 (provide 'keel-exec-test)
 ;;; keel-exec-test.el ends here

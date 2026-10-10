@@ -24,9 +24,9 @@ condition that failed it."
   "One execution of a plan: RESULTS per declaration, in declaration order."
   plan results started elapsed)
 
-(defun keel-run-result (run name)
-  "The result named NAME in RUN."
-  (keel-find-report (keel-run-results run) name))
+(defun keel-run-result (run name &optional kind)
+  "The result named NAME in RUN; KIND defaults to `unit'."
+  (keel-find-report (keel-run-results run) name (or kind 'unit)))
 
 (defun keel-run-problems (run)
   "Results of RUN that are not ok."
@@ -113,9 +113,16 @@ STEP is a thunk; an error makes the result `failed'."
                     :details (list :blockers blockers)
                     :source (keel-report-source report)))
 
-(defun keel-exec--not-ok (results names)
-  "Those of NAMES whose result in RESULTS is not ok."
-  (seq-remove (lambda (n) (keel-report-ok-p (keel-find-report results n))) names))
+(defun keel-exec--not-ok (results names kind)
+  "Those of NAMES whose result of KIND in RESULTS is not ok."
+  (seq-remove (lambda (n) (keel-report-ok-p (keel-find-report results n kind))) names))
+
+(defun keel-exec--pending-p (results names)
+  "Non-nil when any unit of NAMES is deferred and has not run yet."
+  (seq-some (lambda (n)
+              (let ((r (keel-find-report results n 'unit)))
+                (and r (eq (keel-report-reason r) 'deferred))))
+            names))
 
 (defun keel-exec--run-body (unit report)
   "Load UNIT's `:requires' and run its body under REPORT; return a result."
@@ -132,11 +139,13 @@ Loads `:requires' features first.  A failed dependency blocks the unit.
 A unit with `:defer' is registered to run when its feature loads and its
 `:after' units have run; its result is ok with reason `deferred' until
 then."
-  (let ((blockers (keel-exec--not-ok results
-                                     (append (plist-get unit :after)
-                                             (seq-filter
-                                              (lambda (f) (keel-find-report results f))
-                                              (plist-get unit :requires))))))
+  (let ((blockers (append
+                   (keel-exec--not-ok results (plist-get unit :after) 'unit)
+                   (keel-exec--not-ok results
+                                      (seq-filter
+                                       (lambda (f) (keel-find-report results f 'package))
+                                       (plist-get unit :requires))
+                                      'package))))
     (cond
      (blockers (keel-exec--blocked-result report blockers))
      ((funcall keel-exec-unit-filter unit)
@@ -145,27 +154,37 @@ then."
                         :status 'ok
                         :reason (funcall keel-exec-unit-filter unit)
                         :source (keel-report-source report)))
-     ((plist-get unit :defer)
+     ;; A unit after a deferred unit cannot run before it: it waits too.
+     ((or (plist-get unit :defer)
+          (keel-exec--pending-p results (plist-get unit :after)))
       (keel-exec--defer unit report))
      (t (keel-exec--run-body unit report)))))
 
 ;;;; Deferred units
 
 (defvar keel-exec-deferred nil
-  "Units waiting to run: plists (:name :unit :report :feature :loaded).")
+  "Units waiting to run: plists (:name :unit :report :feature :loaded).
+A unit with no :feature only waits for its `:after' units.")
+
+(defvar keel-exec-deferred-results nil
+  "Alist name -> result of deferred units that have run since the last run.")
 
 (defvar keel-exec-deferred-result-functions nil
   "Abnormal hook run with the result of a deferred unit once it has run.")
 
 (defun keel-exec--defer (unit report)
-  "Register UNIT to run when its `:defer' feature loads; return the result."
+  "Register UNIT to run later; return its interim result.
+It runs when its `:defer' feature (if any) has loaded and every `:after'
+unit has run."
   (let ((name (keel-entry-name unit))
         (feature (plist-get unit :defer)))
     (keel-exec-deferred-forget name)
-    (push (list :name name :unit unit :report report :feature feature :loaded nil)
+    (push (list :name name :unit unit :report report :feature feature
+                :loaded (null feature))
           keel-exec-deferred)
-    (with-eval-after-load feature
-      (keel-exec--deferred-feature-loaded name))
+    (when feature
+      (with-eval-after-load feature
+        (keel-exec--deferred-feature-loaded name)))
     (keel-result-make :name name
                       :kind (keel-report-kind report)
                       :status 'ok
@@ -177,6 +196,11 @@ then."
   "Drop the pending deferred unit NAME, if any."
   (setq keel-exec-deferred
         (seq-remove (lambda (p) (eq (plist-get p :name) name)) keel-exec-deferred)))
+
+(defun keel-exec-deferred-reset ()
+  "Forget every pending deferred unit and every deferred result."
+  (setq keel-exec-deferred nil
+        keel-exec-deferred-results nil))
 
 (defun keel-exec--deferred-feature-loaded (name)
   "Note that deferred unit NAME's feature has loaded, and run what is ready."
@@ -193,19 +217,32 @@ then."
                                   keel-exec-deferred))
                       (plist-get (plist-get pending :unit) :after)))))
 
+(defun keel-exec--deferred-blockers (pending)
+  "The `:after' units of PENDING that ran deferred and did not succeed."
+  (seq-filter (lambda (dep)
+                (let ((r (alist-get dep keel-exec-deferred-results)))
+                  (and r (not (keel-report-ok-p r)))))
+              (plist-get (plist-get pending :unit) :after)))
+
 (defun keel-exec--pump-deferred ()
-  "Run every deferred unit that is ready, until none is."
+  "Run every deferred unit that is ready, until none is.
+A unit whose deferred dependency failed is skipped as blocked."
   (let ((ready (seq-find #'keel-exec--deferred-ready-p keel-exec-deferred)))
     (while ready
       (keel-exec-deferred-forget (plist-get ready :name))
-      (let ((result (keel-exec--run-body (plist-get ready :unit) (plist-get ready :report))))
+      (let* ((blockers (keel-exec--deferred-blockers ready))
+             (result (if blockers
+                         (keel-exec--blocked-result (plist-get ready :report) blockers)
+                       (keel-exec--run-body (plist-get ready :unit)
+                                            (plist-get ready :report)))))
+        (setf (alist-get (plist-get ready :name) keel-exec-deferred-results) result)
         (keel-exec--event :event 'unit :result result)
         (run-hook-with-args 'keel-exec-deferred-result-functions result))
       (setq ready (seq-find #'keel-exec--deferred-ready-p keel-exec-deferred)))))
 
 (defun keel-exec-package (entry report results)
   "Install package ENTRY under planner REPORT given RESULTS so far."
-  (let ((blockers (keel-exec--not-ok results (plist-get entry :deps))))
+  (let ((blockers (keel-exec--not-ok results (plist-get entry :deps) 'package)))
     (if blockers
         (keel-exec--blocked-result report blockers)
       (keel-exec--run-step
@@ -217,25 +254,28 @@ then."
   (let ((started (current-time))
         results)
     (keel-exec--event :event 'start :plan plan)
+    (setq keel-exec-deferred-results nil)
     ;; Planner verdicts that are not ok carry over unchanged.
     (dolist (report (keel-plan-reports plan))
       (unless (keel-report-ok-p report)
         (push (keel-result-from-report report) results)))
     (dolist (name (keel-plan-package-order plan))
       (let* ((entry (keel-find-entry packages name))
-             (report (keel-find-report (keel-plan-packages plan) name))
+             (report (keel-find-report (keel-plan-packages plan) name 'package))
              (result (keel-exec-package entry report results)))
         (push result results)
         (keel-exec--event :event 'package :result result)))
     (dolist (name (keel-plan-unit-order plan))
       (let* ((entry (keel-find-entry units name))
-             (report (keel-find-report (keel-plan-units plan) name))
+             (report (keel-find-report (keel-plan-units plan) name 'unit))
              (result (keel-exec-unit entry report results)))
         (push result results)
         (keel-exec--event :event 'unit :result result)))
     (let ((run (keel-run-make
                 :plan plan
-                :results (mapcar (lambda (r) (keel-find-report results (keel-report-name r)))
+                :results (mapcar (lambda (r)
+                                   (keel-find-report results (keel-report-name r)
+                                                     (keel-report-kind r)))
                                  (keel-plan-reports plan))
                 :started started
                 :elapsed (float-time (time-since started)))))

@@ -54,6 +54,12 @@
   (let ((u (keel-static-test-unit 'u '(magit) '(define-key magit-mode-map "q" #'bar))))
     (should (null (keel-static-lint-requires u)))))
 
+(ert-deftest keel-static-lint-ignores-bound-maps-and-map-named-functions ()
+  (let ((u (keel-static-test-unit 'u nil
+                                  '(define-key prog-mode-map "q" #'bar)
+                                  '(seq-map #'identity nil))))
+    (should (null (keel-static-lint-requires u)))))
+
 (ert-deftest keel-static-lint-unused-requires ()
   (let* ((u (keel-static-test-unit 'u '(magit org) '(setq org-directory "~/org")))
          (f (keel-static-lint-requires u)))

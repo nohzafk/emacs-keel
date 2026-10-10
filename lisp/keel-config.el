@@ -133,8 +133,14 @@ nil means $EMACS_KEEL_ENV_FILE, else env in `keel-config-directory'.")
 
 ;;;; Loading
 
+(defvar keel-load-errors nil
+  "Errors signalled by top-level forms of the last config load.
+Each is a plist (:message :source :form).")
+
 (defun keel-config-load-file (file)
-  "Load FILE form by form, giving each declaration its provenance."
+  "Load FILE form by form, giving each declaration its provenance.
+A form that signals is recorded in `keel-load-errors' and skipped, so one
+bad declaration does not hide the rest."
   (with-temp-buffer
     (insert-file-contents file)
     (set-syntax-table emacs-lisp-mode-syntax-table)
@@ -151,7 +157,17 @@ nil means $EMACS_KEEL_ENV_FILE, else env in `keel-config-directory'.")
         (let* ((line (line-number-at-pos (point)))
                (keel--current-source (keel-config--source-at markers line file))
                (form (read (current-buffer))))
-          (eval form lexical)))))
+          (condition-case err
+              (eval form lexical)
+            (error
+             (push (list :message (error-message-string err)
+                         :source keel--current-source
+                         :form form)
+                   keel-load-errors)
+             (message "[keel] %s:%s: %s"
+                      (file-name-nondirectory (or (plist-get keel--current-source :file) "?"))
+                      (or (plist-get keel--current-source :line) "?")
+                      (error-message-string err))))))))
   file)
 
 (defun keel-config-load-target ()
@@ -168,10 +184,21 @@ Signals `keel-config-missing' when neither exists."
 (define-error 'keel-config-missing "No config.org or config.el")
 
 (defun keel-config-load-declarations ()
-  "Reset the registries and load the config into them.  Return the file loaded."
-  (keel-reset-declarations)
+  "Load the config into fresh registries.  Return the file loaded.
+The previous declarations survive if the load fails outright."
   (keel-static-enable)
-  (keel-config-load-file (keel-config-load-target)))
+  (let (packages units errors file)
+    (let ((keel-packages nil)
+          (keel-units nil)
+          (keel-load-errors nil))
+      (setq file (keel-config-load-file (keel-config-load-target))
+            packages keel-packages
+            units keel-units
+            errors keel-load-errors))
+    (setq keel-packages packages
+          keel-units units
+          keel-load-errors (nreverse errors))
+    file))
 
 ;;;; Environment
 
@@ -223,7 +250,7 @@ when FILE does not exist."
          (plan (keel-plan-compute packages units))
          (run (keel-exec-run plan packages units)))
     (setq keel-last-run run
-          keel-last-lint (keel-static-lint units))
+          keel-last-lint (keel-static-lint units t))
     (keel-config--announce run verb)
     (run-hooks 'keel-after-run-hook)
     run))
@@ -252,6 +279,7 @@ when FILE does not exist."
   (when (fboundp 'keel-package-enable)
     (keel-package-enable))
   (keel-effects-reset)
+  (keel-exec-deferred-reset)
   (keel-config-load-declarations)
   (let ((keel-exec-unit-filter #'ignore))
     (keel-config--run "boot")))
@@ -280,21 +308,50 @@ Returns a plist :unchanged :changed :added :removed of names."
     (list :unchanged (nreverse unchanged) :changed (nreverse changed)
           :added (nreverse added) :removed (nreverse removed))))
 
+(defun keel-config--dependents-closure (names units)
+  "NAMES plus every unit in UNITS that is transitively `:after' one of them."
+  (let ((closure (copy-sequence names))
+        (grew t))
+    (while grew
+      (setq grew nil)
+      (dolist (u units)
+        (let ((n (keel-entry-name u)))
+          (when (and (not (memq n closure))
+                     (seq-intersection (plist-get u :after) closure))
+            (push n closure)
+            (setq grew t)))))
+    closure))
+
+(defun keel-config--retract-order (names old-run)
+  "NAMES in reverse of the order OLD-RUN applied them; unrun ones first."
+  (let ((order (and old-run (keel-plan-unit-order (keel-run-plan old-run)))))
+    (sort (copy-sequence names)
+          (lambda (a b)
+            (> (or (seq-position order a) -1)
+               (or (seq-position order b) -1))))))
+
 ;;;###autoload
 (defun keel-reload ()
   "Re-read the config and apply what changed.
-Changed and removed units have their captured effects retracted first;
-unchanged units that ran ok last time are left alone."
+Changed and removed units, and every unit `:after' one of them, have
+their captured effects retracted in reverse application order and are
+run again.  Unchanged units that ran ok last time are left alone."
   (interactive)
   (let ((old-units (keel-declared-units))
         (old-run keel-last-run))
     (keel-config-load-declarations)
-    (let* ((diff (keel-config-diff-units old-units (keel-declared-units)))
+    (let* ((new-units (keel-declared-units))
+           (diff (keel-config-diff-units old-units new-units))
+           (redo (keel-config--dependents-closure
+                  (append (plist-get diff :changed) (plist-get diff :removed))
+                  new-units))
            (leave (seq-filter
                    (lambda (name)
-                     (and old-run (keel-report-ok-p (keel-run-result old-run name))))
+                     (and old-run
+                          (not (memq name redo))
+                          (keel-report-ok-p (keel-run-result old-run name))))
                    (plist-get diff :unchanged))))
-      (dolist (name (append (plist-get diff :changed) (plist-get diff :removed)))
+      (dolist (name (keel-config--retract-order redo old-run))
         (keel-exec-deferred-forget name)
         (dolist (record (keel-effects-retract-unit name))
           (message "[keel] retracted %s for %s" (keel-effects-describe record) name)))

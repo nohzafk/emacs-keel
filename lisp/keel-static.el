@@ -81,16 +81,17 @@ Returns a plist: :setq :hooks :advice :keys :modes :maps :symbols."
   (let* ((acc (keel-static--walk-list body nil))
          (all (delete-dups (append (alist-get :symbols acc)
                                    (alist-get :quoted acc))))
-         (names (mapcar #'symbol-name all)))
+         (names (mapcar #'symbol-name all))
+         (keys (reverse (alist-get :keys acc))))
     (list :setq (delete-dups (nreverse (alist-get :setq acc)))
           :hooks (delete-dups (nreverse (alist-get :hooks acc)))
           :advice (delete-dups (nreverse (alist-get :advice acc)))
-          :keys (nreverse (alist-get :keys acc))
+          :keys keys
           :modes (seq-filter (lambda (s) (string-suffix-p "-mode" (symbol-name s))) all)
           :maps (seq-filter (lambda (s)
-                              (and (string-suffix-p "-map" (symbol-name s))
-                                   (not (eq s 'global-map))
-                                   (memq s (alist-get :symbols acc))))
+                              ;; Only maps the body binds keys in.
+                              (and (not (eq s 'global-map))
+                                   (seq-some (lambda (k) (eq (car k) s)) keys)))
                             all)
           :symbols names)))
 
@@ -116,7 +117,10 @@ feature whose name prefixes nothing in the body is probably unused."
          (symbols (mapcar #'intern (plist-get static :symbols)))
          findings)
     (dolist (map (plist-get static :maps))
-      (unless (seq-some (lambda (f) (keel-static--provided-by-p f map)) requires)
+      ;; A map that is already bound (preloaded, or from a feature loaded
+      ;; earlier) needs no feature.
+      (unless (or (boundp map)
+                  (seq-some (lambda (f) (keel-static--provided-by-p f map)) requires))
         (push (keel-static-finding
                unit 'warning 'map-without-requires
                (format "%s is used as a keymap but no :requires feature provides it"

@@ -25,7 +25,7 @@ problems: they depend on the machine, not the config."
              (invalid (seq-filter (lambda (r) (eq (keel-report-status r) 'invalid))
                                   (keel-plan-reports plan)))
              (warnings (seq-filter (lambda (f) (eq (plist-get f :level) 'warning)) lint)))
-        (list :code (cond (invalid 1)
+        (list :code (cond ((or invalid keel-load-errors) 1)
                           ((and strict warnings) 1)
                           (t 0))
               :file file :plan plan :lint lint))
@@ -39,10 +39,13 @@ problems: they depend on the machine, not the config."
            (reports (keel-plan-reports plan))
            (problems (keel-plan-problems plan))
            (lint (plist-get result :lint)))
-      (princ (format "keel check: %s\n  %d packages, %d units, %d problems, %d lint findings\n"
+      (princ (format "keel check: %s\n  %d packages, %d units, %d problems, %d lint findings, %d load errors\n"
                      (plist-get result :file)
                      (length (keel-plan-packages plan)) (length (keel-plan-units plan))
-                     (length problems) (length lint)))
+                     (length problems) (length lint) (length keel-load-errors)))
+      (dolist (e keel-load-errors)
+        (princ (format "  %-8s %s\n    at %s\n" "error" (plist-get e :message)
+                       (keel-report-source-string (plist-get e :source)))))
       (dolist (r reports)
         (unless (keel-report-ok-p r)
           (princ (format "  %-8s %-24s %s\n    at %s\n"
