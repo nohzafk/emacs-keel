@@ -4,7 +4,7 @@
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "31.1"))
 ;; Keywords: convenience, lisp
-;; URL: https://github.com/nohzafk/keel
+;; URL: https://github.com/nohzafk/emacs-keel
 
 ;;; Commentary:
 

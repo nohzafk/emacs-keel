@@ -1,4 +1,4 @@
-# keel
+# emacs-keel
 
 Deterministic, dependency-aware Emacs configuration, in pure Emacs Lisp.
 
