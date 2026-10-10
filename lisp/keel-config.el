@@ -249,6 +249,8 @@ when FILE does not exist."
   "Load the config, plan it, run it.  Call from init.el."
   (keel-config-load-env)
   (keel-effects-enable)
+  (when (fboundp 'keel-package-enable)
+    (keel-package-enable))
   (keel-effects-reset)
   (keel-config-load-declarations)
   (let ((keel-exec-unit-filter #'ignore))

@@ -24,6 +24,7 @@
 (require 'keel-config)
 (require 'keel-report)
 (require 'keel-check)
+(require 'keel-package)
 
 (provide 'keel)
 ;;; keel.el ends here
