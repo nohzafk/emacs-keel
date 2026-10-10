@@ -107,7 +107,7 @@
    (config-unit! needs-builtin :requires (cl-lib) :config nil)
    (config-unit! needs-broken :requires (broken) :config nil)
    (config-unit! after-skipped :after (needs-env) :config nil)
-   (let ((plan (keel-plan-from-declarations)))
+   (let ((plan (keel-plan-from-declarations t)))
      (should (equal (keel-test-status plan 'unit 'needs-env) '(skipped env-missing)))
      (should (equal (keel-test-status plan 'unit 'needs-exe) '(skipped executable-missing)))
      (should (equal (keel-test-status plan 'unit 'needs-feature) '(skipped requires-missing)))
@@ -115,6 +115,17 @@
      (should (equal (keel-test-status plan 'unit 'needs-broken) '(skipped requires-blocked)))
      (should (equal (keel-test-status plan 'unit 'after-skipped) '(skipped blocked)))
      (should (equal (keel-plan-unit-order plan) '(needs-builtin))))))
+
+(ert-deftest keel-plan-without-probe-is-structural-only ()
+  "Boot plans without probing: a feature may appear only once packages
+and earlier units have run, so the executor probes instead."
+  (keel-test-with-declarations
+   (config-unit! needs-env :env (NOPE) :config nil)
+   (config-unit! needs-feature :requires (nope-feature) :config nil)
+   (let ((plan (keel-plan-from-declarations)))
+     (should (equal (keel-test-status plan 'unit 'needs-env) '(ok nil)))
+     (should (equal (keel-test-status plan 'unit 'needs-feature) '(ok nil)))
+     (should (equal (keel-plan-unit-order plan) '(needs-env needs-feature))))))
 
 (ert-deftest keel-plan-declared-package-satisfies-requires-without-probe ()
   (keel-test-with-declarations

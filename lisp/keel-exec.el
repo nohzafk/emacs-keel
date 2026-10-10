@@ -124,21 +124,35 @@ STEP is a thunk; an error makes the result `failed'."
                 (and r (eq (keel-report-reason r) 'deferred))))
             names))
 
-(defun keel-exec--run-body (unit report)
-  "Load UNIT's `:requires' and run its body under REPORT; return a result."
-  (keel-exec--run-step
-   report
-   (lambda ()
-     (dolist (feature (plist-get unit :requires))
-       (require feature))
-     (funcall keel-exec-unit-runner unit (plist-get unit :thunk)))))
+(defun keel-exec--skipped-result (report skip)
+  "A skipped result for REPORT from preflight verdict SKIP, (REASON . DETAILS)."
+  (keel-result-make :name (keel-report-name report)
+                    :kind (keel-report-kind report)
+                    :status 'skipped
+                    :reason (car skip)
+                    :details (cdr skip)
+                    :source (keel-report-source report)))
+
+(defun keel-exec--run-body (unit report results)
+  "Probe UNIT's environment against package RESULTS, then run its body.
+Loads `:requires' first.  Returns a result."
+  (let ((skip (keel-plan-unit-preflight results unit)))
+    (if skip
+        (keel-exec--skipped-result report skip)
+      (keel-exec--run-step
+       report
+       (lambda ()
+         (dolist (feature (plist-get unit :requires))
+           (require feature))
+         (funcall keel-exec-unit-runner unit (plist-get unit :thunk)))))))
 
 (defun keel-exec-unit (unit report results)
   "Execute UNIT under planner REPORT given RESULTS so far; return its result.
-Loads `:requires' features first.  A failed dependency blocks the unit.
-A unit with `:defer' is registered to run when its feature loads and its
-`:after' units have run; its result is ok with reason `deferred' until
-then."
+A failed dependency blocks the unit.  Right before the body runs, the
+unit's `:requires', `:env' and `:executable' are probed, so a feature a
+package or an earlier unit just made available counts.  A unit with
+`:defer' is registered to run when its feature loads and its `:after'
+units have run; its result is ok with reason `deferred' until then."
   (let ((blockers (append
                    (keel-exec--not-ok results (plist-get unit :after) 'unit)
                    (keel-exec--not-ok results
@@ -157,8 +171,8 @@ then."
      ;; A unit after a deferred unit cannot run before it: it waits too.
      ((or (plist-get unit :defer)
           (keel-exec--pending-p results (plist-get unit :after)))
-      (keel-exec--defer unit report))
-     (t (keel-exec--run-body unit report)))))
+      (keel-exec--defer unit report results))
+     (t (keel-exec--run-body unit report results)))))
 
 ;;;; Deferred units
 
@@ -172,15 +186,17 @@ A unit with no :feature only waits for its `:after' units.")
 (defvar keel-exec-deferred-result-functions nil
   "Abnormal hook run with the result of a deferred unit once it has run.")
 
-(defun keel-exec--defer (unit report)
+(defun keel-exec--defer (unit report results)
   "Register UNIT to run later; return its interim result.
 It runs when its `:defer' feature (if any) has loaded and every `:after'
-unit has run."
+unit has run, and is probed then against the package RESULTS of this run."
   (let ((name (keel-entry-name unit))
         (feature (plist-get unit :defer)))
     (keel-exec-deferred-forget name)
     (push (list :name name :unit unit :report report :feature feature
-                :loaded (null feature))
+                :loaded (null feature)
+                :packages (seq-filter (lambda (r) (eq (keel-report-kind r) 'package))
+                                      results))
           keel-exec-deferred)
     (when feature
       (with-eval-after-load feature
@@ -234,7 +250,8 @@ A unit whose deferred dependency failed is skipped as blocked."
              (result (if blockers
                          (keel-exec--blocked-result (plist-get ready :report) blockers)
                        (keel-exec--run-body (plist-get ready :unit)
-                                            (plist-get ready :report)))))
+                                            (plist-get ready :report)
+                                            (plist-get ready :packages)))))
         (setf (alist-get (plist-get ready :name) keel-exec-deferred-results) result)
         (keel-exec--event :event 'unit :result result)
         (run-hook-with-args 'keel-exec-deferred-result-functions result))

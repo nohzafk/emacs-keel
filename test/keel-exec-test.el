@@ -5,6 +5,8 @@
 (require 'keel-exec)
 
 (defvar keel-exec-test-log nil)
+(defvar keel-exec-test-available nil
+  "Features the probing tests consider installed.")
 
 (defmacro keel-exec-test-with (&rest body)
   "Run BODY with empty registries, a permissive planner and a logging runner."
@@ -202,6 +204,27 @@
        (provide 'keel-exec-test-feat-e)
        (should-not (memq 'child keel-exec-test-log))
        (should (equal (reverse seen) '((bad . failed) (child . skipped))))))))
+
+(ert-deftest keel-exec-probes-requires-when-the-unit-runs ()
+  "A feature an earlier unit makes available is found; one still missing
+at run time skips the unit and blocks its dependents."
+  (keel-exec-test-with
+   (let ((keel-exec-test-available nil)
+         (keel-plan-probes
+          (list :getenv #'ignore
+                :executable-find #'ignore
+                :feature-available-p (lambda (f) (memq f keel-exec-test-available)))))
+     (config-unit! provider :config (setq keel-exec-test-available '(late-feature)))
+     (config-unit! consumer :after (provider) :requires (late-feature) :config nil)
+     (config-unit! wants-missing :requires (never) :config nil)
+     (config-unit! after-missing :after (wants-missing) :config nil)
+     (cl-letf (((symbol-function 'require) (lambda (&rest _) nil)))
+       (let ((run (keel-exec-test-run)))
+         (should (equal (keel-exec-test-status run 'consumer) '(ok nil)))
+         (should (equal (keel-exec-test-status run 'wants-missing) '(skipped requires-missing)))
+         (should (equal (keel-exec-test-status run 'after-missing) '(skipped blocked)))
+         (should (equal (keel-plan-unit-order (keel-run-plan run))
+                        '(provider consumer wants-missing after-missing))))))))
 
 (provide 'keel-exec-test)
 ;;; keel-exec-test.el ends here

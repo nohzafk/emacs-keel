@@ -305,26 +305,29 @@ tests do.")
   "Apply probe KEY from `keel-plan-probes' to ARGS."
   (apply (plist-get keel-plan-probes key) args))
 
-(defun keel--unit-check (package-reports)
-  "Return the preflight CHECK for units given PACKAGE-REPORTS."
-  (lambda (unit)
-    (let (blocked missing)
-      (dolist (feature (plist-get unit :requires))
-        (let ((pkg (keel-find-report package-reports feature)))
-          (cond ((and pkg (not (keel-report-ok-p pkg))) (push feature blocked))
-                (pkg)
-                ((not (keel--probe :feature-available-p feature))
-                 (push feature missing)))))
-      (let ((env (seq-remove (lambda (v)
-                               (let ((val (keel--probe :getenv v)))
-                                 (and val (not (string-empty-p val)))))
-                             (plist-get unit :env)))
-            (exe (seq-remove (lambda (b) (keel--probe :executable-find b))
-                             (plist-get unit :executable))))
-        (cond (blocked (cons 'requires-blocked (list :blockers (nreverse blocked))))
-              (missing (cons 'requires-missing (list :missing (nreverse missing))))
-              (env (cons 'env-missing (list :missing env)))
-              (exe (cons 'executable-missing (list :missing exe))))))))
+(defun keel-plan-unit-preflight (package-reports unit)
+  "Probe the environment UNIT needs; nil when satisfied.
+Otherwise (REASON . DETAILS) to skip it.  A `:requires' feature that names
+a package in PACKAGE-REPORTS is judged by that package's report; any
+other feature, every `:env' variable and every `:executable' is probed
+through `keel-plan-probes'."
+  (let (blocked missing)
+    (dolist (feature (plist-get unit :requires))
+      (let ((pkg (keel-find-report package-reports feature)))
+        (cond ((and pkg (not (keel-report-ok-p pkg))) (push feature blocked))
+              (pkg)
+              ((not (keel--probe :feature-available-p feature))
+               (push feature missing)))))
+    (let ((env (seq-remove (lambda (v)
+                             (let ((val (keel--probe :getenv v)))
+                               (and val (not (string-empty-p val)))))
+                           (plist-get unit :env)))
+          (exe (seq-remove (lambda (b) (keel--probe :executable-find b))
+                           (plist-get unit :executable))))
+      (cond (blocked (cons 'requires-blocked (list :blockers (nreverse blocked))))
+            (missing (cons 'requires-missing (list :missing (nreverse missing))))
+            (env (cons 'env-missing (list :missing env)))
+            (exe (cons 'executable-missing (list :missing exe)))))))
 
 ;;;; Plan
 
@@ -334,17 +337,25 @@ PACKAGES and UNITS are reports in declaration order.  PACKAGE-ORDER and
 UNIT-ORDER name the ok entries in execution order."
   packages units package-order unit-order)
 
-(defun keel-plan-compute (packages units)
+(defun keel-plan-compute (packages units &optional probe)
   "Plan PACKAGES and UNITS, both lists of declaration plists.
-Pure apart from `keel-plan-probes'."
+The plan is structural: duplicates, dangling references, cycles, order.
+With PROBE non-nil each unit's environment is also checked now, through
+`keel-plan-probes', as `keel-check' does since it never executes.  Boot
+leaves PROBE nil: a feature can only be found once its package is
+installed and the units before it have run, so `keel-exec-unit' probes
+right before the unit runs."
   (let* ((pkg (keel--resolve packages :deps 'package (lambda (_) nil)))
-         (unit (keel--resolve units :after 'unit (keel--unit-check (car pkg)))))
+         (check (if probe
+                    (lambda (unit) (keel-plan-unit-preflight (car pkg) unit))
+                  (lambda (_) nil)))
+         (unit (keel--resolve units :after 'unit check)))
     (keel-plan-make :packages (car pkg) :units (car unit)
                     :package-order (cdr pkg) :unit-order (cdr unit))))
 
-(defun keel-plan-from-declarations ()
-  "Plan the current declarations."
-  (keel-plan-compute (keel-declared-packages) (keel-declared-units)))
+(defun keel-plan-from-declarations (&optional probe)
+  "Plan the current declarations; PROBE as in `keel-plan-compute'."
+  (keel-plan-compute (keel-declared-packages) (keel-declared-units) probe))
 
 (defun keel-plan-reports (plan)
   "All reports of PLAN, packages first."

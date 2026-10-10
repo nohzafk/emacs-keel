@@ -20,7 +20,7 @@ missing config.  Units skipped by preflight (env, executable) are not
 problems: they depend on the machine, not the config."
   (condition-case err
       (let* ((file (keel-config-load-declarations))
-             (plan (keel-plan-from-declarations))
+             (plan (keel-plan-from-declarations t))
              (lint (keel-static-lint (keel-declared-units) t))
              (invalid (seq-filter (lambda (r) (eq (keel-report-status r) 'invalid))
                                   (keel-plan-reports plan)))
