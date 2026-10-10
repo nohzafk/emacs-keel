@@ -1,0 +1,103 @@
+#!/bin/sh
+# End-to-end: boot keel in a throwaway Emacs home from a generated init.el
+# and config.org, then run keel-check on the same config.
+set -eu
+
+here=$(cd "$(dirname "$0")/.." && pwd)
+emacs=${EMACS:-emacs}
+home=$(mktemp -d "${TMPDIR:-/tmp}/keel-e2e.XXXXXX")
+trap 'rm -rf "$home"' EXIT
+
+mkdir -p "$home/keel"
+
+cat > "$home/init.el" <<EOF
+;; -*- lexical-binding: t; -*-
+(add-to-list 'load-path "$here/lisp")
+(setq keel-config-directory "$home/keel")
+(require 'keel)
+(keel-boot)
+EOF
+
+cat > "$home/keel/config.org" <<'EOF'
+#+title: e2e
+
+* Packages
+
+#+begin_src emacs-lisp
+(package! project)
+(package! xref)
+#+end_src
+
+* Editing
+
+#+begin_src emacs-lisp
+(defvar keel-e2e-marker nil)
+(defvar keel-e2e-lazy nil)
+
+(config-unit! editing
+  :requires (project)
+  :config
+  (project-known-project-roots)
+  (add-hook 'prog-mode-hook #'display-line-numbers-mode)
+  (setq keel-e2e-marker 'set-by-editing))
+#+end_src
+
+* Lazy
+
+#+begin_src emacs-lisp
+(config-unit! lazy
+  :after (editing)
+  :defer keel-e2e-feature
+  :config
+  (setq keel-e2e-lazy 'ran))
+#+end_src
+
+* Skipped
+
+#+begin_src emacs-lisp
+(config-unit! needs-tool
+  :executable (keel-e2e-no-such-binary)
+  :config
+  (error "must not run"))
+#+end_src
+EOF
+
+echo "== boot"
+"$emacs" -Q --batch -l "$home/init.el" --eval '
+(progn
+  (unless (eq keel-e2e-marker (quote set-by-editing)) (error "editing did not run"))
+  (unless (memq (function display-line-numbers-mode) prog-mode-hook) (error "hook missing"))
+  (unless (= 2 (length (keel-effects-of (quote editing)))) (error "expected hook + variable effects: %S" (keel-effects-of (quote editing))))
+  (let ((r (keel-run-result keel-last-run (quote needs-tool))))
+    (unless (eq (keel-report-reason r) (quote executable-missing)) (error "needs-tool not skipped: %S" r)))
+  (let ((r (keel-run-result keel-last-run (quote lazy))))
+    (unless (eq (keel-report-reason r) (quote deferred)) (error "lazy not deferred")))
+  (when keel-e2e-lazy (error "lazy ran early"))
+  (provide (quote keel-e2e-feature))
+  (unless (eq keel-e2e-lazy (quote ran)) (error "lazy did not run on feature load"))
+  (unless (null (keel-report-reason (keel-run-result keel-last-run (quote lazy)))) (error "lazy result not updated"))
+  (let ((src (keel-report-source (keel-run-result keel-last-run (quote editing)))))
+    (unless (equal (plist-get src :heading) "Editing") (error "provenance lost: %S" src)))
+  (keel-effects-retract-unit (quote editing))
+  (when (memq (function display-line-numbers-mode) prog-mode-hook) (error "retract failed"))
+  (princ "boot ok\n"))'
+
+echo "== check (expect 0)"
+"$here/scripts/keel-check" --config "$home/keel"
+
+echo "== check --strict with a lint warning (expect 1)"
+cat >> "$home/keel/config.org" <<'EOF'
+
+* Lint
+
+#+begin_src emacs-lisp
+(config-unit! linty
+  :config
+  (define-key keel-e2e-mode-map "q" #'ignore))
+#+end_src
+EOF
+if "$here/scripts/keel-check" --config "$home/keel" --strict; then
+  echo "expected exit 1"; exit 1
+fi
+
+echo "== e2e ok"

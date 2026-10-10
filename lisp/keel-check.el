@@ -14,15 +14,18 @@
 
 (defun keel-check (&optional strict)
   "Load and plan the config; return (:code N :plan PLAN :lint FINDINGS).
-Code 0 means clean (lint allowed unless STRICT), 1 means problems, 2 a
-harness error such as a missing config."
+Code 0 means clean (lint allowed unless STRICT), 1 means an invalid
+declaration or, with STRICT, a lint warning; 2 a harness error such as a
+missing config.  Units skipped by preflight (env, executable) are not
+problems: they depend on the machine, not the config."
   (condition-case err
       (let* ((file (keel-config-load-declarations))
              (plan (keel-plan-from-declarations))
              (lint (keel-static-lint (keel-declared-units) t))
-             (problems (keel-plan-problems plan))
+             (invalid (seq-filter (lambda (r) (eq (keel-report-status r) 'invalid))
+                                  (keel-plan-reports plan)))
              (warnings (seq-filter (lambda (f) (eq (plist-get f :level) 'warning)) lint)))
-        (list :code (cond (problems 1)
+        (list :code (cond (invalid 1)
                           ((and strict warnings) 1)
                           (t 0))
               :file file :plan plan :lint lint))
