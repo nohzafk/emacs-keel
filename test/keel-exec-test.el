@@ -106,6 +106,65 @@
      (config-unit! u :config nil)
      (keel-exec-test-run)
      (should (equal (reverse events) '(start package unit finish))))))
+(defmacro keel-exec-test-with-feature (feature &rest body)
+  "Run BODY, then make sure FEATURE is not left provided."
+  (declare (indent 1))
+  `(unwind-protect (progn ,@body)
+     (setq features (delq ,feature features))
+     (setq after-load-alist (assq-delete-all ,feature after-load-alist))))
+
+(ert-deftest keel-exec-deferred-unit-runs-when-feature-loads ()
+  (keel-exec-test-with
+   (keel-exec-test-with-feature 'keel-exec-test-feat
+     (let* ((keel-exec-deferred nil)
+            (seen nil)
+            (keel-exec-deferred-result-functions
+            (list (lambda (r) (push (keel-report-status r) seen)))))
+       (config-unit! lazy :defer keel-exec-test-feat :config (push 'lazy-body keel-exec-test-log))
+       (let ((run (keel-exec-test-run)))
+         (should (equal (keel-exec-test-status run 'lazy) '(ok deferred)))
+         (should-not (memq 'lazy-body keel-exec-test-log))
+         (should (equal (length keel-exec-deferred) 1))
+         (provide 'keel-exec-test-feat)
+         (should (memq 'lazy-body keel-exec-test-log))
+         (should (equal seen '(ok)))
+         (should (null keel-exec-deferred)))))))
+
+(ert-deftest keel-exec-deferred-unit-waits-for-deferred-after ()
+  (keel-exec-test-with
+   (keel-exec-test-with-feature 'keel-exec-test-feat-a
+     (keel-exec-test-with-feature 'keel-exec-test-feat-b
+       (let ((keel-exec-deferred nil)
+             (keel-exec-deferred-result-functions nil))
+         (config-unit! first :defer keel-exec-test-feat-a :config (push 'first keel-exec-test-log))
+         (config-unit! second :defer keel-exec-test-feat-b :after (first)
+           :config (push 'second keel-exec-test-log))
+         (keel-exec-test-run)
+         (setq keel-exec-test-log nil)
+         (provide 'keel-exec-test-feat-b)
+         (should (null keel-exec-test-log))
+         (provide 'keel-exec-test-feat-a)
+         (should (equal (seq-filter #'symbolp keel-exec-test-log) '(second first))))))))
+
+(ert-deftest keel-exec-deferred-unit-with-loaded-feature-runs-at-once ()
+  (keel-exec-test-with
+   (let ((keel-exec-deferred nil)
+         (keel-exec-deferred-result-functions nil))
+     (config-unit! now :defer cl-lib :config (push 'now keel-exec-test-log))
+     (keel-exec-test-run)
+     (should (memq 'now keel-exec-test-log))
+     (should (null keel-exec-deferred)))))
+
+(ert-deftest keel-exec-deferred-forget-drops-a-pending-unit ()
+  (keel-exec-test-with
+   (keel-exec-test-with-feature 'keel-exec-test-feat-c
+     (let ((keel-exec-deferred nil)
+           (keel-exec-deferred-result-functions nil))
+       (config-unit! gone :defer keel-exec-test-feat-c :config (push 'gone keel-exec-test-log))
+       (keel-exec-test-run)
+       (keel-exec-deferred-forget 'gone)
+       (provide 'keel-exec-test-feat-c)
+       (should-not (memq 'gone keel-exec-test-log))))))
 
 (provide 'keel-exec-test)
 ;;; keel-exec-test.el ends here

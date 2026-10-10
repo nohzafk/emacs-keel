@@ -228,6 +228,22 @@ when FILE does not exist."
     (run-hooks 'keel-after-run-hook)
     run))
 
+(defun keel-config--note-deferred-result (result)
+  "Record RESULT of a deferred unit in `keel-last-run' and announce it."
+  (when keel-last-run
+    (setf (keel-run-results keel-last-run)
+          (mapcar (lambda (r)
+                    (if (eq (keel-report-name r) (keel-report-name result)) result r))
+                  (keel-run-results keel-last-run))))
+  (if (keel-report-ok-p result)
+      (message "[keel] deferred unit %s ran (%.0fms)" (keel-report-name result)
+               (* 1000 (or (keel-result-elapsed result) 0)))
+    (message "[keel] deferred unit %s failed: %s" (keel-report-name result)
+             (plist-get (keel-report-details result) :message))
+    (run-hooks 'keel-after-run-hook)))
+
+(add-hook 'keel-exec-deferred-result-functions #'keel-config--note-deferred-result)
+
 ;;;###autoload
 (defun keel-boot ()
   "Load the config, plan it, run it.  Call from init.el."
@@ -277,6 +293,7 @@ unchanged units that ran ok last time are left alone."
                      (and old-run (keel-report-ok-p (keel-run-result old-run name))))
                    (plist-get diff :unchanged))))
       (dolist (name (append (plist-get diff :changed) (plist-get diff :removed)))
+        (keel-exec-deferred-forget name)
         (dolist (record (keel-effects-retract-unit name))
           (message "[keel] retracted %s for %s" (keel-effects-describe record) name)))
       (let ((keel-exec-unit-filter

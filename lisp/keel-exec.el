@@ -117,9 +117,21 @@ STEP is a thunk; an error makes the result `failed'."
   "Those of NAMES whose result in RESULTS is not ok."
   (seq-remove (lambda (n) (keel-report-ok-p (keel-find-report results n))) names))
 
+(defun keel-exec--run-body (unit report)
+  "Load UNIT's `:requires' and run its body under REPORT; return a result."
+  (keel-exec--run-step
+   report
+   (lambda ()
+     (dolist (feature (plist-get unit :requires))
+       (require feature))
+     (funcall keel-exec-unit-runner unit (plist-get unit :thunk)))))
+
 (defun keel-exec-unit (unit report results)
   "Execute UNIT under planner REPORT given RESULTS so far; return its result.
-Loads `:requires' features first.  A failed dependency blocks the unit."
+Loads `:requires' features first.  A failed dependency blocks the unit.
+A unit with `:defer' is registered to run when its feature loads and its
+`:after' units have run; its result is ok with reason `deferred' until
+then."
   (let ((blockers (keel-exec--not-ok results
                                      (append (plist-get unit :after)
                                              (seq-filter
@@ -133,13 +145,63 @@ Loads `:requires' features first.  A failed dependency blocks the unit."
                         :status 'ok
                         :reason (funcall keel-exec-unit-filter unit)
                         :source (keel-report-source report)))
-     (t
-      (keel-exec--run-step
-       report
-       (lambda ()
-         (dolist (feature (plist-get unit :requires))
-           (require feature))
-         (funcall keel-exec-unit-runner unit (plist-get unit :thunk))))))))
+     ((plist-get unit :defer)
+      (keel-exec--defer unit report))
+     (t (keel-exec--run-body unit report)))))
+
+;;;; Deferred units
+
+(defvar keel-exec-deferred nil
+  "Units waiting to run: plists (:name :unit :report :feature :loaded).")
+
+(defvar keel-exec-deferred-result-functions nil
+  "Abnormal hook run with the result of a deferred unit once it has run.")
+
+(defun keel-exec--defer (unit report)
+  "Register UNIT to run when its `:defer' feature loads; return the result."
+  (let ((name (keel-entry-name unit))
+        (feature (plist-get unit :defer)))
+    (keel-exec-deferred-forget name)
+    (push (list :name name :unit unit :report report :feature feature :loaded nil)
+          keel-exec-deferred)
+    (with-eval-after-load feature
+      (keel-exec--deferred-feature-loaded name))
+    (keel-result-make :name name
+                      :kind (keel-report-kind report)
+                      :status 'ok
+                      :reason 'deferred
+                      :details (list :feature feature)
+                      :source (keel-report-source report))))
+
+(defun keel-exec-deferred-forget (name)
+  "Drop the pending deferred unit NAME, if any."
+  (setq keel-exec-deferred
+        (seq-remove (lambda (p) (eq (plist-get p :name) name)) keel-exec-deferred)))
+
+(defun keel-exec--deferred-feature-loaded (name)
+  "Note that deferred unit NAME's feature has loaded, and run what is ready."
+  (let ((pending (seq-find (lambda (p) (eq (plist-get p :name) name)) keel-exec-deferred)))
+    (when pending
+      (plist-put pending :loaded t)
+      (keel-exec--pump-deferred))))
+
+(defun keel-exec--deferred-ready-p (pending)
+  "Non-nil when PENDING's feature has loaded and no `:after' unit is still pending."
+  (and (plist-get pending :loaded)
+       (not (seq-some (lambda (dep)
+                        (seq-some (lambda (p) (eq (plist-get p :name) dep))
+                                  keel-exec-deferred))
+                      (plist-get (plist-get pending :unit) :after)))))
+
+(defun keel-exec--pump-deferred ()
+  "Run every deferred unit that is ready, until none is."
+  (let ((ready (seq-find #'keel-exec--deferred-ready-p keel-exec-deferred)))
+    (while ready
+      (keel-exec-deferred-forget (plist-get ready :name))
+      (let ((result (keel-exec--run-body (plist-get ready :unit) (plist-get ready :report))))
+        (keel-exec--event :event 'unit :result result)
+        (run-hook-with-args 'keel-exec-deferred-result-functions result))
+      (setq ready (seq-find #'keel-exec--deferred-ready-p keel-exec-deferred)))))
 
 (defun keel-exec-package (entry report results)
   "Install package ENTRY under planner REPORT given RESULTS so far."
