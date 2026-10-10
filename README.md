@@ -148,11 +148,22 @@ implementations were really about.
 ## Usage
 
 ```elisp
+;; early-init.el
+(add-to-list 'load-path "~/path/to/keel/lisp")
+(require 'keel-early)
+
 ;; init.el
 (add-to-list 'load-path "~/path/to/keel/lisp")
 (require 'keel)
 (keel-boot)
 ```
+
+`keel-early` holds what Emacs reads between early-init and init: it
+points `package-user-dir` at keel's packages so `package-activate-all`
+sees them, keeps `prepare-user-lisp` out of linked checkouts' `test/`
+directories, and stops it byte-compiling `.dir-locals.el` (data, which
+would fail on every start). Without it the startup byte-compile of
+`user-lisp/` cannot find archive packages and `*Compile-Log*` fills up.
 
 `keel-boot` loads `$XDG_CONFIG_HOME/keel/config.org` (tangled) or
 `config.el`, injects the optional `env` file, plans, installs packages,
