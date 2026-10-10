@@ -42,6 +42,22 @@
          (when (symbolp (cadr form))
            (push (cadr form) (alist-get :quoted acc)))
          acc)
+        ;; Names the body binds itself are not external keymaps.
+        ((or 'let 'let* 'dlet 'if-let 'if-let* 'when-let 'when-let* 'while-let)
+         (dolist (b (cadr form))
+           (let ((var (if (consp b) (car b) b)))
+             (when (symbolp var) (push var (alist-get :bound acc)))))
+         (keel-static--walk-list (cdr form) acc))
+        ((or 'lambda 'defun 'defmacro 'cl-defun 'defsubst)
+         (let ((args (if (eq head 'lambda) (cadr form) (caddr form))))
+           (dolist (a (if (listp args) args nil))
+             (when (and (symbolp a) (not (memq a '(&optional &rest &key &aux))))
+               (push a (alist-get :bound acc)))))
+         (keel-static--walk-list (cdr form) acc))
+        ((or 'defvar 'defvar-local 'defvar-keymap 'defconst 'defcustom)
+         (when (symbolp (cadr form))
+           (push (cadr form) (alist-get :bound acc)))
+         (keel-static--walk-list (cdr form) acc))
         ((or 'setq 'setq-default 'setopt)
          (cl-loop for (var _val) on (cdr form) by #'cddr
                   when (symbolp var) do (push var (alist-get :setq acc)))
@@ -79,6 +95,7 @@
   "Analyze BODY, a list of forms, at expansion time.
 Returns a plist: :setq :hooks :advice :keys :modes :maps :symbols."
   (let* ((acc (keel-static--walk-list body nil))
+         (bound (alist-get :bound acc))
          (all (delete-dups (append (alist-get :symbols acc)
                                    (alist-get :quoted acc))))
          (names (mapcar #'symbol-name all))
@@ -89,8 +106,10 @@ Returns a plist: :setq :hooks :advice :keys :modes :maps :symbols."
           :keys keys
           :modes (seq-filter (lambda (s) (string-suffix-p "-mode" (symbol-name s))) all)
           :maps (seq-filter (lambda (s)
-                              ;; Only maps the body binds keys in.
+                              ;; Only maps the body binds keys in, and
+                              ;; does not bind as a variable itself.
                               (and (not (eq s 'global-map))
+                                   (not (memq s bound))
                                    (seq-some (lambda (k) (eq (car k) s)) keys)))
                             all)
           :symbols names)))

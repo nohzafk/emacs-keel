@@ -42,6 +42,16 @@
     (should (equal (plist-get s :maps) '(magit-mode-map)))
     (should (member 'flymake-mode (plist-get s :modes)))))
 
+(ert-deftest keel-static-maps-exclude-body-bound-names ()
+  "A keymap the body binds itself (let, defvar-keymap, arg) is not external."
+  (let ((s (keel-static-analyze
+            'u '((defvar my-map (let ((map (make-sparse-keymap)))
+                                  (define-key map "n" #'foo)
+                                  map))
+                 (defvar-keymap my-other-map "a" #'bar)
+                 (keymap-set my-other-map "b" #'baz)
+                 (lambda (m) (define-key m "c" #'qux))))))
+    (should (null (plist-get s :maps)))))
 (ert-deftest keel-static-lint-map-without-requires ()
   (let* ((u (keel-static-test-unit 'u nil '(define-key magit-mode-map "q" #'bar)))
          (f (keel-static-lint-requires u)))
