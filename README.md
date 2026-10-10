@@ -130,7 +130,7 @@ lisp/
   keel-config.el    config.org tangling, env file, keel-boot, keel-reload
   keel-report.el    report buffer, keel-explain, keel-list-units
   keel-check.el     batch validation entry point
-  keel-package.el   package-vc bridge, keel.lock, upgrade/prune
+  keel-package.el   clone, link into user-lisp-directory, keel.lock, upgrade/prune
   keel.el           entry point
 test/               ERT, run with `make test`
 scripts/            keel-check wrapper, e2e harness
@@ -151,34 +151,89 @@ implementations were really about.
 ```
 
 `keel-boot` loads `$XDG_CONFIG_HOME/keel/config.org` (tangled) or
-`config.el`, plans, executes, and shows the report if anything failed.
+`config.el`, injects the optional `env` file, plans, installs packages,
+runs units, and shows the report if anything failed.
 
-```sh
-emacs --batch -l ~/path/to/keel/lisp/keel.el -f keel-check-batch
+```text
+~/.config/keel/
+├── config.org   literate config (preferred); or config.el
+├── env          optional: Lisp list of "KEY=VALUE" strings, injected at boot
+└── keel.lock    installed package revisions, written by keel; commit it
 ```
 
-validates the config without executing it. Exit `0` clean, `1` findings,
-`2` harness error.
+```sh
+scripts/keel-check [--strict] [--format sexp] [--config DIR]
+```
+
+validates the config without executing it: tangle, plan, preflight,
+static lint, byte-compiler lint. Exit `0` clean, `1` an invalid
+declaration (or a lint warning with `--strict`), `2` harness error. Units
+skipped by preflight are reported but do not fail the check: they depend
+on the machine, not the config.
+
+### Commands
+
+| Command | Does |
+|---|---|
+| `keel-reload` | re-read the config; retract and re-apply changed units only |
+| `keel-report` | the report buffer: problems, packages, units, timings, lint; links jump to source |
+| `keel-explain` | one unit: declaration, verdict, dependents, captured effects, lint, body |
+| `keel-list-units` | every unit in a table; `RET` explains, `j` jumps to source, `r` reruns |
+| `keel-rerun-unit` | retract one unit's effects and run its body again |
+| `keel-upgrade-package`, `keel-upgrade-all-packages` | ignore the lock, honour the declaration, report the revision delta |
+| `keel-rebuild-package` | drop the clone and cache, re-clone, re-run `:build`, re-link |
+| `keel-prune-packages` | list installed-but-undeclared packages and remove them after confirmation |
+
+`KEEL_UPGRADE_PACKAGES=name1,name2` (or `all`) and `KEEL_REBUILD_PACKAGES`
+do the same at boot.
+
+## Packages
+
+`package!` options:
+
+| Option | Meaning |
+|---|---|
+| `:repo` | git repository, `"owner/name"` or a full URL |
+| `:host` | `"github"` (default), `"gitlab"`, `"codeberg"`, `"sourcehut"` |
+| `:branch`, `:tag`, `:ref` | what to track or pin |
+| `:local` | a checkout on disk; linked directly, never cloned or locked |
+| `:lisp-dir` | subdirectory holding the `.el` files |
+| `:deps` | packages that must be installed first |
+| `:submodules` | run `git submodule update --init --recursive` in the clone |
+| `:build` | shell command(s) run in the clone before activation |
+
+A bare `(package! consult)` installs from GNU ELPA, NonGNU ELPA or MELPA
+with `package-install`. Anything with `:repo`, `:host` or `:local` goes
+through Emacs 31's User Lisp Directory: the clone (or the `:local` path)
+is linked into `user-lisp-directory` and `prepare-user-lisp` byte-compiles
+it and scrapes its autoloads. `package-vc-install-from-checkout` is
+obsolete in 31 and is not used. Clones are fetched in parallel before the
+plan runs; adoption is per package, in plan order.
+
+`keel.lock` records every installed revision. Precedence at install: a
+declared `:ref`/`:tag` wins and rewrites the lock; else the locked
+revision; else the branch or default HEAD, whose result is locked. A fresh
+machine with `config.org` and `keel.lock` reproduces the revisions that
+wrote the lock.
 
 ## Requirements
 
 Emacs 31 (uses `package-vc-install`, `read-positioning-symbols`,
 `add-variable-watcher`).
 
+## Development
+
+```sh
+make test      # ERT in batch
+make compile   # byte-compile with warnings as errors
+scripts/e2e    # boot a throwaway home, then keel-check it
+```
+
 ## Status
 
-Under construction. Milestones, in order:
-
-1. README, test harness
-2. `keel-plan`: declarations, graph, preflight, plan
-3. `keel-exec`: executor, fail-forward, timing
-4. `keel-static`: macro-time analysis, byte-compiler lint
-5. `keel-effects`: capture, transactional units, retract
-6. `keel-config`: tangle, env, boot, reload
-7. `keel-report`: report buffer, explain, list, rerun
-8. `keel-check`: batch validation
-9. `keel-package`: package-vc bridge, lockfile, upgrade/prune
-10. `:defer`, end-to-end test in a throwaway home
+Every module in the layout exists and is tested in batch. Network paths
+(real clones from a forge, archive installs) have been exercised by hand,
+not by the test suite, which uses local `file://` repositories.
 
 ## Lineage
 
