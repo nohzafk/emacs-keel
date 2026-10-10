@@ -244,6 +244,34 @@ Every module in the layout exists and is tested in batch. Network paths
 (real clones from a forge, archive installs) have been exercised by hand,
 not by the test suite, which uses local `file://` repositories.
 
+### Known gaps
+
+- **Rebuild and upgrade purge before they fetch.** `keel-rebuild-package`,
+  `keel-upgrade-package` and the `KEEL_*_PACKAGES` env vars delete the clone
+  and the link first, then clone again. If the fetch fails, the previously
+  working package is gone until the next successful fetch; only `keel.lock`
+  still names the old revision. The fix is clone-to-temp-then-swap.
+- **A changed pin on an installed package is a no-op at boot.** Editing
+  `:ref`, `:tag`, `:branch` or `:repo` of a package that is already linked
+  changes nothing and warns about nothing. `keel-rebuild-package` applies the
+  new declaration. Comparing the declaration to the lock entry at install
+  time would catch it.
+- **`keel-rerun-unit` skips preflight.** It runs the body even if the planner
+  had skipped the unit (missing binary, invalid declaration), and a rerun of
+  a `:defer` unit whose feature is already loaded reports `deferred` instead
+  of the body's result.
+- **Deferred registrations accumulate.** Each boot or reload of a `:defer`
+  unit adds one `with-eval-after-load` closure that is never removed. They
+  are inert once the pending entry is gone, but a later re-`load` of the
+  feature runs them again.
+- **`define-key` from C is not captured.** The advice sees Lisp callers
+  only. Natively compiled callers are untested here.
+- **`scripts/e2e` touches the real `user-emacs-directory`.** It runs `-Q`
+  with a temp config dir but not a temp Emacs home, so an empty
+  `<user-emacs-directory>/keel/` appears after a run.
+- **Package names are trusted.** A name containing `/` or `..` becomes a
+  path under the state root without validation.
+
 ## Lineage
 
 emacs-backbone (Gleam) → emacs-hypervisor (Elle) → keel (Emacs Lisp). The
