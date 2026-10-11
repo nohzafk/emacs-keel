@@ -56,7 +56,11 @@
          (keel-static--walk-list (cdr form) acc))
         ((or 'defvar 'defvar-local 'defvar-keymap 'defconst 'defcustom)
          (when (symbolp (cadr form))
-           (push (cadr form) (alist-get :bound acc)))
+           (push (cadr form) (alist-get :bound acc))
+           ;; A `defvar' with a value, or a `defvar-keymap', defines.
+           (when (or (eq head 'defvar-keymap)
+                     (and (eq head 'defvar) (cddr form)))
+             (push (cadr form) (alist-get :defvars acc))))
          (keel-static--walk-list (cdr form) acc))
         ((or 'setq 'setq-default 'setopt)
          (cl-loop for (var _val) on (cdr form) by #'cddr
@@ -93,7 +97,8 @@
 
 (defun keel-static-analyze (_name body)
   "Analyze BODY, a list of forms, at expansion time.
-Returns a plist: :setq :hooks :advice :keys :modes :maps :symbols."
+Returns a plist: :setq :hooks :advice :keys :modes :maps :defvars
+:symbols."
   (let* ((acc (keel-static--walk-list body nil))
          (bound (alist-get :bound acc))
          (all (delete-dups (append (alist-get :symbols acc)
@@ -103,6 +108,7 @@ Returns a plist: :setq :hooks :advice :keys :modes :maps :symbols."
     (list :setq (delete-dups (nreverse (alist-get :setq acc)))
           :hooks (delete-dups (nreverse (alist-get :hooks acc)))
           :advice (delete-dups (nreverse (alist-get :advice acc)))
+          :defvars (delete-dups (nreverse (alist-get :defvars acc)))
           :keys keys
           :modes (seq-filter (lambda (s) (string-suffix-p "-mode" (symbol-name s))) all)
           :maps (seq-filter (lambda (s)

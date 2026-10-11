@@ -96,6 +96,18 @@ the symbol table, the byte-compiler and the runtime, and uses them:
   previous load, retracts the captured effects of changed and removed units
   and of every unit `:after` them, newest first, and re-applies only those.
   Everything else is left alone.
+- **Keymaps the config defines are redefined on reload.** `defvar` keeps a
+  variable that is already bound, so a changed `defvar-keymap` would keep
+  its old keys. When a unit's `defvar` or `defvar-keymap` finds its
+  variable unbound and leaves a keymap in it, keel records that as the
+  unit's effect; retracting it unbinds the variable, so the next run
+  defines the keymap afresh, deleted keys included. The old keymap object
+  is emptied and inherits from the new one, so a prefix binding or mode
+  that other code made with the old object sees the new keys. A keymap
+  that was already bound before the unit ran, such as a package's mode
+  map, is left as `defvar` leaves it. Keys another unit adds to a
+  config-defined map are lost when the defining unit reruns: keep a map's
+  keys in the unit that defines it.
 - **Checked-lazy.** A unit with `:defer FEATURE` is preflighted and linted at
   startup like every other unit, but its body runs when the feature loads.
   A unit `:after` a deferred unit waits for it too, and a deferred unit that

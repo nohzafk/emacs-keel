@@ -8,6 +8,13 @@
 ;;   `global-set-key' and friends call) are advised for the dynamic extent
 ;;   of the body.  Loops and helper functions are covered because capture
 ;;   is dynamic, not syntactic.
+;; - A `defvar' or `defvar-keymap' the static pass saw, whose variable
+;;   was unbound before the body and holds a keymap after it, is recorded
+;;   as the unit's own.  Retracting it unbinds the variable, so the next
+;;   run defines the keymap afresh instead of `defvar' keeping the old
+;;   one; the old keymap object is emptied and then inherits from the new
+;;   one, so a binding or mode that still holds the old object sees the
+;;   new keys.
 ;; - The globals the static pass saw assigned (`setq', `setopt',
 ;;   `customize-set-variable', ...) get variable watchers, so their first
 ;;   old value is kept and can be restored.
@@ -72,6 +79,7 @@
                   (key-description (plist-get record :key))
                   (plist-get record :binding)))
     ('variable (format "variable %s" (plist-get record :target)))
+    ('keymap (format "keymap %s" (plist-get record :target)))
     (kind (format "%s %s" kind (plist-get record :target)))))
 
 ;;;; Capture hooks
@@ -194,6 +202,39 @@ first write may be a library's own `defvar', which will not run twice."
   (advice-remove 'define-key #'keel-effects--around-define-key)
   (advice-remove 'add-hook #'keel-effects--around-add-hook))
 
+;;;; Keymaps the config defines
+
+(defvar keel-effects--retired-maps nil
+  "Alist variable -> keymap object a retracted unit had defined.
+When a unit defines the variable again, the old object inherits from the
+new keymap.")
+
+(defun keel-effects--forward-map (old new)
+  "Make keymap OLD an empty keymap whose parent is NEW."
+  (setcdr old nil)
+  (unless (eq old new)
+    (set-keymap-parent old new)))
+
+(defun keel-effects--record-keymaps (names)
+  "Record each of NAMES that now holds a keymap as defined by the unit.
+NAMES are the unit's `defvar' targets that were unbound before its body."
+  (dolist (sym names)
+    (when (and (boundp sym) (keymapp (default-value sym)))
+      (let ((map (default-value sym))
+            (old (alist-get sym keel-effects--retired-maps)))
+        (when old
+          (keel-effects--forward-map old map)
+          (setf (alist-get sym keel-effects--retired-maps nil 'remove) nil))
+        (keel-effects--record
+         (keel-effects-make
+          'keymap sym
+          (lambda ()
+            (when (and (boundp sym) (eq (default-value sym) map))
+              (makunbound sym)
+              (setcdr map nil)
+              (setf (alist-get sym keel-effects--retired-maps) map)))
+          :keymap map))))))
+
 (defun keel-effects-retract-records (records)
   "Retract RECORDS, newest first.  Return the records whose retract failed."
   (let (failed)
@@ -214,6 +255,7 @@ its own name."
          (keel-effects--watched nil)
          (keel-effects--known-maps
           (append (plist-get (plist-get unit :static) :maps) keel-effects--known-maps))
+         (fresh (seq-remove #'boundp (plist-get (plist-get unit :static) :defvars)))
          (ok nil))
     (when (= keel-effects--depth 0)
       (keel-effects--install-advice))
@@ -226,6 +268,7 @@ its own name."
       (cl-decf keel-effects--depth)
       (when (= keel-effects--depth 0)
         (keel-effects--remove-advice))
+      (keel-effects--record-keymaps fresh)
       (if (or ok (not keel-effects-transactional))
           (setf (alist-get name keel-effects-registry)
                 (append keel-effects--current (alist-get name keel-effects-registry)))

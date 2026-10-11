@@ -131,6 +131,60 @@ Some prose.
    (should (null (keel-effects-of 'vars)))
    (should (memq #'ignore keel-config-test-hook))))
 
+(defvar keel-config-test-host (make-sparse-keymap)
+  "A keymap a test unit binds a prefix in, holding the prefix map by value.")
+
+(defun keel-config-test-keymap-org (key)
+  "Config whose `km' unit defines a keymap binding KEY to `ignore'."
+  (format "* Map
+#+begin_src emacs-lisp
+(config-unit! km
+  :config
+  (defvar-keymap keel-config-test-km
+    %S #'ignore))
+#+end_src
+
+* Prefix
+#+begin_src emacs-lisp
+(config-unit! prefix
+  :config
+  (keymap-set keel-config-test-host \"C-c a\" keel-config-test-km))
+#+end_src
+" key))
+
+(ert-deftest keel-config-reload-redefines-config-keymap ()
+  (keel-config-test-with-home
+   (let ((keel-config-test-host (make-sparse-keymap))
+         (keel-effects--retired-maps nil))
+     (unwind-protect
+         (progn
+           (keel-config-test-write "config.org" (keel-config-test-keymap-org "a"))
+           (keel-boot)
+           (should (eq (keymap-lookup keel-config-test-host "C-c a a") #'ignore))
+           ;; Change the key; only `km' reruns, `prefix' keeps the old object.
+           (keel-config-test-write "config.org" (keel-config-test-keymap-org "r"))
+           (let ((run (keel-reload)))
+             (should (eq (keel-report-reason (keel-run-result run 'prefix)) 'unchanged)))
+           (should (eq (keymap-lookup keel-config-test-km "r") #'ignore))
+           (should (null (keymap-lookup keel-config-test-km "a")))
+           (should (eq (keymap-lookup keel-config-test-host "C-c a r") #'ignore))
+           (should (null (keymap-lookup keel-config-test-host "C-c a a"))))
+       (makunbound 'keel-config-test-km)))))
+
+(ert-deftest keel-config-boot-leaves-keymap-defined-elsewhere ()
+  (keel-config-test-with-home
+   (let ((keel-effects--retired-maps nil))
+     (unwind-protect
+         (progn
+           (defvar keel-config-test-km (define-keymap "b" #'car))
+           (keel-config-test-write "config.org" (keel-config-test-keymap-org "a"))
+           (keel-boot)
+           ;; Already bound before the unit ran: `defvar' keeps it, keel does too.
+           (should (eq (keymap-lookup keel-config-test-km "b") #'car))
+           (should (null (keymap-lookup keel-config-test-km "a")))
+           (should (null (keel-effects-of 'km))))
+       (makunbound 'keel-config-test-km)))))
+
 (ert-deftest keel-config-diff-units ()
   (let ((old (list (list :name 'a :body '(1)) (list :name 'b :body '(2))))
         (new (list (list :name 'a :body '(1)) (list :name 'b :body '(3))
